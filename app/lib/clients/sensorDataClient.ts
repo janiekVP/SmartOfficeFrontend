@@ -18,6 +18,12 @@ export async function listSensorData(token?: string) {
   return http<SensorData[]>(`${BASE}/sensordata`, { authToken: token });
 }
 
+export async function listSensorDataByPOISensorId(poiSensorId: string | number, token?: string) {
+  return http<SensorData[]>(`${BASE}/sensordata/poisensor/${poiSensorId}`, {
+    authToken: token
+  });
+}
+
 export async function getSensorData(id: string, token?: string) {
   return http<SensorData>(`${BASE}/sensordata/${id}`, { authToken: token });
 }

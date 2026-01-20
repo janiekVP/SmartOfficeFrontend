@@ -16,6 +16,10 @@ export async function listPOI(token?: string) {
   return http<POI[]>(`${BASE}/poi`, { authToken: token });
 }
 
+export async function listPOIByFloorplanId(floorplanId: string | number, token?: string) {
+  return http<POI[]>(`${BASE}/poi/floorplan/${floorplanId}`, { authToken: token });
+}
+
 export async function getPOI(id: string, token?: string) {
   return http<POI>(`${BASE}/poi/${id}`, { authToken: token });
 }

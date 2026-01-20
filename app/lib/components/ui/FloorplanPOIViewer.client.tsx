@@ -32,7 +32,6 @@ export default function FloorplanPOIViewer({ floorplanId }: { floorplanId: numbe
                 <div><dt className="text-gray-500">Naam</dt><dd className="text-base">{selected.name}</dd></div>
                 <div><dt className="text-gray-500">Type</dt><dd className="text-base">{selected.type}</dd></div>
                 <div><dt className="text-gray-500">Beschrijving</dt><dd className="text-base">{selected.description}</dd></div>
-                <div><dt className="text-gray-500">FloorplanId</dt><dd className="text-base">{selected.floorplanid}</dd></div>
                 <div><dt className="text-gray-500">Lng</dt><dd className="text-base">{selected.coordx}</dd></div>
                 <div><dt className="text-gray-500">Lat</dt><dd className="text-base">{selected.coordy}</dd></div>
               </dl>
@@ -75,11 +74,9 @@ export default function FloorplanPOIViewer({ floorplanId }: { floorplanId: numbe
                   const id = String(selected!.id);
                   const updated = await updatePOI(id, payload);
                   await mapRef.current?.reloadPois();
-                  // paneel terug naar view, met geüpdatete waarden
                   setSelected({
                     ...selected!,
                     ...payload,
-                    // fallback: neem waarden uit updated als jouw API camelCase terugstuurt
                     name: (payload as any).name ?? (updated as any).name,
                     type: (payload as any).type ?? (updated as any).type,
                     description: (payload as any).description ?? (updated as any).description,

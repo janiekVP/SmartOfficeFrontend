@@ -4,7 +4,13 @@ const BASE = process.env.NEXT_PUBLIC_POISENSORS_API ?? 'http://localhost:5273/ap
 
 export type POISensor = {
   id: number;
-  poiid: number;
+  POIId: number;
+  name: string;
+  type: string;
+};
+
+export type POISensorCreateDto = {
+  POIId: number;
   name: string;
   type: string;
 };
@@ -13,12 +19,22 @@ export async function listPOISensor(token?: string) {
   return http<POISensor[]>(`${BASE}/poisensor`, { authToken: token });
 }
 
+export async function listPOISensorByPOIId(POIId: string | number, token?: string) {
+  return http<POISensor[]>(`${BASE}/poisensor/poi/${POIId}`, {
+    authToken: token
+  });
+}
+
 export async function getPOISensor(id: string, token?: string) {
   return http<POISensor>(`${BASE}/poisensor/${id}`, { authToken: token });
 }
 
-export async function createPOISensor(payload: Omit<POISensor, 'id'>, token?: string) {
-  return http<POISensor>(`${BASE}/poisensor`, { method: 'POST', body: payload, authToken: token });
+export async function createPOISensor(payload: POISensorCreateDto, token?: string) {
+  return http<POISensor>(`${BASE}/poisensor`, {
+    method: 'POST',
+    body: payload,
+    authToken: token,
+  });
 }
 
 export async function updatePOISensor(id: string, patch: Partial<POISensor>, token?: string) {

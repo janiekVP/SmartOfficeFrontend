@@ -17,10 +17,10 @@ export default function POITable({ data }: Props) {
       getRowId={(s) => s.id}
       actions={(s) => (
         <Link
-          href={`/poi/${s.id}`}
+          href={`/poi/${s.id}/sensors`}
           className="text-blue-600 hover:underline"
         >
-          Details
+          Sensors
         </Link>
       )}
     />
