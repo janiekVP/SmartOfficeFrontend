@@ -6,7 +6,7 @@ import { createPOI, type POI } from '@/lib/clients/poisClient';
 import { GenericForm } from '@/lib/components/ui/GenericForm';
 import { POIFields } from '@/features/poi/formConfig';
 
-export default function FloorplanPOICreator({ floorplanId }: { floorplanId: number }) {
+export default function FloorplanPOICreator({ floorplanId, imageUrl }: { floorplanId: number; imageUrl: string }) {
   const mapRef = useRef<MapHandle>(null);
   const [previewCoords, setPreviewCoords] = useState<[number, number] | null>(null);
   const [initial, setInitial] = useState<Partial<POI> | undefined>(undefined);
@@ -16,6 +16,7 @@ export default function FloorplanPOICreator({ floorplanId }: { floorplanId: numb
       <FloorplanMapBase
         ref={mapRef}
         floorplanId={floorplanId}
+        imageUrl={imageUrl}
         mode="create"
         previewCoords={previewCoords}
         previewDraggable={true}
@@ -52,13 +53,12 @@ export default function FloorplanPOICreator({ floorplanId }: { floorplanId: numb
               const [lng, lat] = previewCoords;
               const finalPayload = {
                 ...payload,
-                floorplanid: floorplanId, // forceer juiste floorplan
+                floorplanid: floorplanId,
                 coordx: Number(lng),
                 coordy: Number(lat),
               };
               await createPOI(finalPayload as any);
               await mapRef.current?.reloadPois();
-              // reset panel + preview
               setPreviewCoords(null);
               setInitial(undefined);
             }}

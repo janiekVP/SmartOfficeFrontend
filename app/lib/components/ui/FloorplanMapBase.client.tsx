@@ -1,12 +1,21 @@
 'use client';
 
 import 'mapbox-gl/dist/mapbox-gl.css';
-import React, { useEffect, useMemo, useRef, useImperativeHandle, forwardRef } from 'react';
 import mapboxgl from 'mapbox-gl';
+import React, {
+  useEffect,
+  useRef,
+  useImperativeHandle,
+  forwardRef,
+} from 'react';
 import type { FeatureCollection, Point } from 'geojson';
-import { listPOI, type POI } from '@/lib/clients/poisClient';
+import {
+  listPOIByFloorplanId,
+  type POI
+} from '@/lib/clients/poisClient';
 
-mapboxgl.accessToken = process.env.NEXT_PUBLIC_MAPBOX_TOKEN ?? 'YOUR_MAPBOX_TOKEN';
+mapboxgl.accessToken =
+  process.env.NEXT_PUBLIC_MAPBOX_TOKEN ?? 'YOUR_MAPBOX_TOKEN';
 
 export type MapHandle = {
   reloadPois: () => Promise<void>;
@@ -15,237 +24,304 @@ export type MapHandle = {
 type Props = {
   floorplanId: number;
   mode: 'view' | 'create';
-  imageUrl?: string;
-  imageCorners?: [ [number, number], [number, number], [number, number], [number, number] ];
+  imageUrl: string;
+
+  /** image height / image width → for you: 405/1000 = 0.405 */
+  imageAspect?: number;
+
+  /** Optional normalized corners */
+  imageCorners?: [
+    [number, number],
+    [number, number],
+    [number, number],
+    [number, number]
+  ];
+
   onPOIClick?: (poi: POI) => void;
-  onMapClick?: (lng: number, lat: number) => void;
-  previewCoords?: [number, number] | null;            // alleen gebruiken in mode='create'
-  previewDraggable?: boolean;                         // default: true
-  onPreviewDragEnd?: (lng: number, lat: number) => void;
+
+  /** return normalized coordinates when map is clicked */
+  onMapClick?: (nx: number, ny: number) => void;
+
+  /** preview marker data (normalized coords) */
+  previewCoords?: [number, number] | null;
+  previewDraggable?: boolean;
+  onPreviewDragEnd?: (nx: number, ny: number) => void;
 };
 
-const DEFAULT_CORNERS: [
-  [number, number], [number, number], [number, number], [number, number]
-] = [
-  [4.894, 52.371], // top-left
-  [4.896, 52.371], // top-right
-  [4.896, 52.369], // bottom-right
-  [4.894, 52.369], // bottom-left
-];
-
+/* ----------------------------------------------------------
+ * NORMALIZE POI FROM API (fixes coordX → coordx mismatch)
+ * -------------------------------------------------------- */
 function normalizePOI(p: any): POI {
-  // Zorg dat we altijd lowercase keys teruggeven naar de parent
   return {
     id: Number(p.id),
-    floorplanid: Number(p.floorplanid ?? p.floorplanId ?? p.FloorplanId),
-    name: (p.name ?? p.Name ?? '').toString(),
-    type: (p.type ?? p.Type ?? '').toString(),
-    description: (p.description ?? p.Description ?? '').toString(),
-    coordx: Number(p.coordx ?? p.coordX ?? p.CoordX ?? p.lng ?? p.longitude),
-    coordy: Number(p.coordy ?? p.coordY ?? p.CoordY ?? p.lat ?? p.latitude),
+    floorplanid: Number(p.floorplanid ?? p.floorplanId),
+    name: String(p.name ?? ''),
+    type: String(p.type ?? ''),
+    description: String(p.description ?? ''),
+    coordx: Number(p.coordx ?? p.coordX),
+    coordy: Number(p.coordy ?? p.coordY),
   };
 }
 
-function buildFeatureCollection(list: any[], floorId: number): FeatureCollection<Point> {
-  const floorNum = Number(floorId);
+/* ----------------------------------------------------------
+ * SAFE LOCAL LON/LAT BOX
+ * lon ∈ [-10, +10]
+ * lat ∈ [-10, -10 + 20 * aspect]
+ * Always within valid Mapbox lat range (-90..90)
+ * -------------------------------------------------------- */
+const LON_MIN = -10;
+const LON_MAX = 10;
+const LON_SPAN = LON_MAX - LON_MIN;
+
+function toLon(nx: number) {
+  return LON_MIN + nx * LON_SPAN;
+}
+
+function toLat(ny: number, aspect: number) {
+  const latMin = -10;
+  const latMax = latMin + LON_SPAN * aspect;
+  const latSpan = latMax - latMin;
+  return latMin + ny * latSpan;
+}
+
+function fromLon(lon: number) {
+  return (lon - LON_MIN) / LON_SPAN;
+}
+function fromLat(lat: number, aspect: number) {
+  const latMin = -10;
+  const latMax = latMin + LON_SPAN * aspect;
+  return (lat - latMin) / (latMax - latMin);
+}
+
+/* ----------------------------------------------------------
+ * Build FeatureCollection
+ * -------------------------------------------------------- */
+function toFeatureCollection(
+  raw: any[],
+  floorId: number,
+  aspect: number
+): FeatureCollection<Point> {
+  const floorPois = raw.map(normalizePOI).filter(p => p.floorplanid === floorId);
+
   return {
     type: 'FeatureCollection',
-    features: list
-      .filter(p => Number(p.floorplanid ?? p.floorplanId ?? p.FloorplanId) === floorNum)
-      .map(p => {
-        const poi = normalizePOI(p);
-        return {
-          type: 'Feature',
-          id: poi.id,
-          geometry: { type: 'Point', coordinates: [poi.coordx, poi.coordy] },
-          properties: poi, // bewaar normalized POI in properties
-        } as const;
-      })
+    features: floorPois.map(p => ({
+      type: 'Feature',
+      id: p.id,
+      geometry: {
+        type: 'Point',
+        coordinates: [toLon(p.coordx), toLat(p.coordy, aspect)],
+      },
+      properties: p,
+    })),
   };
 }
 
-const FloorplanMapBase = forwardRef<MapHandle, Props>(function FloorplanMapBase({
-  floorplanId,
-  mode,
-  imageUrl = '/floorplan.png',
-  imageCorners,
-  onPOIClick,
-  onMapClick,
-  previewCoords,
-  previewDraggable = true,
-  onPreviewDragEnd,
-}, ref) {
-
+/* ----------------------------------------------------------
+ * MAIN COMPONENT
+ * -------------------------------------------------------- */
+const FloorplanMapBase = forwardRef<MapHandle, Props>(function FloorplanMapBase(
+  {
+    floorplanId,
+    mode,
+    imageUrl,
+    imageAspect = 0.405,
+    imageCorners,
+    onPOIClick,
+    onMapClick,
+    previewCoords,
+    previewDraggable = true,
+    onPreviewDragEnd,
+  },
+  ref
+) {
   const mapRef = useRef<mapboxgl.Map | null>(null);
-  const mapElRef = useRef<HTMLDivElement>(null);
-  const previewMarkerRef = useRef<mapboxgl.Marker | null>(null);
+  const mapEl = useRef<HTMLDivElement>(null);
+  const previewMarker = useRef<mapboxgl.Marker | null>(null);
 
-  const corners = useMemo(() => imageCorners ?? DEFAULT_CORNERS, [imageCorners]);
+  /* Convert normalized corners into lon/lat */
+  const corners: [[number, number],[number, number],[number, number],[number, number]] = (() => {
+    const nc =
+      imageCorners ??
+      ([
+        [0, 1],
+        [1, 1],
+        [1, 0],
+        [0, 0],
+      ] as const);
 
-  // Handlers refs (voor nette off(...))
-  const onCircleClickRef = useRef<((e: mapboxgl.MapLayerMouseEvent) => void) | null>(null);
-  const onCircleMoveRef  = useRef<((e: mapboxgl.MapLayerMouseEvent) => void) | null>(null);
-  const onMapClickRef    = useRef<((e: mapboxgl.MapMouseEvent) => void) | null>(null);
+    return [
+      [toLon(nc[0][0]), toLat(nc[0][1], imageAspect)],
+      [toLon(nc[1][0]), toLat(nc[1][1], imageAspect)],
+      [toLon(nc[2][0]), toLat(nc[2][1], imageAspect)],
+      [toLon(nc[3][0]), toLat(nc[3][1], imageAspect)],
+    ];
+  })();
 
-  // Util: bron updaten
-  const updatePoisSource = (fc: FeatureCollection<Point>) => {
-    const src = mapRef.current?.getSource('pois') as mapboxgl.GeoJSONSource | undefined;
-    if (!src) {
-      setTimeout(() => {
-        const src2 = mapRef.current?.getSource('pois') as mapboxgl.GeoJSONSource | undefined;
-        src2?.setData(fc);
-      }, 0);
-      return;
-    }
-    src.setData(fc);
-  };
-
-  // Expose reloadPois via ref
+  /* reloadPois exposed to parent */
   useImperativeHandle(ref, () => ({
     reloadPois: async () => {
-      const all = await listPOI();
-      const fc = buildFeatureCollection(all, floorplanId);
-      updatePoisSource(fc);
+      const all = await listPOIByFloorplanId(floorplanId);
+      const src = mapRef.current?.getSource('pois') as mapboxgl.GeoJSONSource;
+      if (src) src.setData(toFeatureCollection(all, floorplanId, imageAspect));
     }
-  }), [floorplanId]);
+  }), [floorplanId, imageAspect]);
 
-  // INIT kaart (eenmalig)
+  /* --------------------------------------------------------
+   * INIT MAP
+   * ------------------------------------------------------ */
   useEffect(() => {
-    if (!mapElRef.current || mapRef.current) return;
+    if (!mapEl.current || mapRef.current) return;
 
     const map = new mapboxgl.Map({
-      container: mapElRef.current,
+      container: mapEl.current,
       style: { version: 8, sources: {}, layers: [] },
-      center: [4.895168, 52.370216],
-      zoom: 18,
-      pitch: 0,
-      bearing: 0
+      projection: 'mercator',
+      renderWorldCopies: false,
+      center: [toLon(0.5), toLat(0.5, imageAspect)],
+      zoom: 0,
+      minZoom: -2,
+      maxZoom: 12,
+      interactive: true,
+      attributionControl: false,
     });
+
     mapRef.current = map;
 
-    const onLoad = async () => {
-      // Floorplan overlay
+    map.on('load', async () => {
+      /* Add floorplan image */
       map.addSource('floorplan', {
         type: 'image',
         url: imageUrl,
         coordinates: corners,
       });
+
       map.addLayer({
         id: 'floorplan-layer',
         type: 'raster',
         source: 'floorplan',
-        paint: { 'raster-opacity': 0.85 },
+        paint: { 'raster-opacity': 1 },
       });
 
-      // POI‑bron + circle layer
-      map.addSource('pois', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+      /* Fit to image */
+      const latMin = -10;
+      const latMax = latMin + LON_SPAN * imageAspect;
+
+      map.fitBounds(
+        [
+          [LON_MIN, latMin],
+          [LON_MAX, latMax],
+        ],
+        { padding: 20, animate: false }
+      );
+
+      /* Stop user from panning too far away */
+      map.setMaxBounds([
+        [LON_MIN - 5, latMin - 5],
+        [LON_MAX + 5, latMax + 5],
+      ]);
+
+      /* Add POI layer */
+      map.addSource('pois', {
+        type: 'geojson',
+        data: { type: 'FeatureCollection', features: [] },
+      });
+
       map.addLayer({
         id: 'poi-circles',
         type: 'circle',
         source: 'pois',
         paint: {
-          'circle-radius': 6,
+          'circle-radius': 8,
+          'circle-color': '#0d6efd',
           'circle-stroke-width': 2,
           'circle-stroke-color': '#ffffff',
-          'circle-color': '#0d6efd',
-          'circle-opacity': 1
-        }
+        },
       });
-      try { map.moveLayer('poi-circles'); } catch {}
 
-      // Marker‑klik → detail
-      const onCircleClick = (e: mapboxgl.MapLayerMouseEvent) => {
+      /* Click POI */
+      map.on('click', 'poi-circles', (e) => {
+        if (!onPOIClick) return;
         const f = e.features?.[0];
-        if (!f || !onPOIClick) return;
-        const props = f.properties as any;
-        onPOIClick(normalizePOI(props));
-      };
-      const onCircleMove = (e: mapboxgl.MapLayerMouseEvent) => {
-        map.getCanvas().style.cursor = e.features?.length ? 'pointer' : '';
-      };
-      onCircleClickRef.current = onCircleClick;
-      onCircleMoveRef.current  = onCircleMove;
-      map.on('click', 'poi-circles', onCircleClick);
-      map.on('mousemove', 'poi-circles', onCircleMove);
+        if (!f) return;
 
-      // Lege kaart klik → create
+        const raw = f.properties as any;
+        const poi = normalizePOI(raw);
+
+        onPOIClick(poi);
+      });
+
+      /* Click empty map → normalized coords */
       if (mode === 'create' && onMapClick) {
-        const onMapClickHandler = (e: mapboxgl.MapMouseEvent) => {
-          onMapClick(Number(e.lngLat.lng.toFixed(6)), Number(e.lngLat.lat.toFixed(6)));
-        };
-        onMapClickRef.current = onMapClickHandler;
-        map.on('click', onMapClickHandler);
+        map.on('click', (e) => {
+          const nx = fromLon(e.lngLat.lng);
+          const ny = fromLat(e.lngLat.lat, imageAspect);
+          onMapClick(nx, ny);
+        });
       }
 
-      // Initiele data
-      const all = await listPOI();
-      updatePoisSource(buildFeatureCollection(all, floorplanId));
-    };
+      /* Load POIs */
+      const all = await listPOIByFloorplanId(floorplanId);
+      const src = map.getSource('pois') as mapboxgl.GeoJSONSource;
 
-    map.on('load', onLoad);
+      console.log("%c POIs loaded FOR MAP:", "background:#333;color:#0f0", all);
+
+      src.setData(toFeatureCollection(all, floorplanId, imageAspect));
+    });
 
     return () => {
-      // handlers off
-      if (onCircleClickRef.current)  { try { map.off('click', 'poi-circles', onCircleClickRef.current); } catch {} }
-      if (onCircleMoveRef.current)   { try { map.off('mousemove', 'poi-circles', onCircleMoveRef.current); } catch {} }
-      if (onMapClickRef.current)     { try { map.off('click', onMapClickRef.current); } catch {} }
-
-      // preview weg
-      if (previewMarkerRef.current) { previewMarkerRef.current.remove(); previewMarkerRef.current = null; }
-
-      // layers/sources weg
-      if (map.getLayer('poi-circles')) map.removeLayer('poi-circles');
-      if (map.getSource('pois'))       map.removeSource('pois');
-      if (map.getLayer('floorplan-layer')) map.removeLayer('floorplan-layer');
-      if (map.getSource('floorplan'))      map.removeSource('floorplan');
-
       map.remove();
       mapRef.current = null;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [imageUrl, imageAspect, floorplanId]);
 
-  // Preview marker tekenen/updaten op basis van props (creator‑flow)
+  /* --------------------------------------------------------
+   * Preview marker
+   * ------------------------------------------------------ */
   useEffect(() => {
-    if (mode !== 'create') return;
-    const map = mapRef.current;
-    if (!map) return;
+    if (!mapRef.current || mode !== 'create') return;
 
-    // weg als null
+    const map = mapRef.current;
+
     if (!previewCoords) {
-      if (previewMarkerRef.current) {
-        previewMarkerRef.current.remove();
-        previewMarkerRef.current = null;
-      }
+      previewMarker.current?.remove();
+      previewMarker.current = null;
       return;
     }
 
-    // aanmaken of verplaatsen
-    if (!previewMarkerRef.current) {
+    const [nx, ny] = previewCoords;
+    const lng = toLon(nx);
+    const lat = toLat(ny, imageAspect);
+
+    if (!previewMarker.current) {
       const el = document.createElement('div');
       el.style.width = '36px';
       el.style.height = '36px';
       el.style.borderRadius = '50%';
       el.style.border = '3px dashed #0d6efd';
       el.style.background = '#cfe2ff';
-      el.style.boxShadow = '0 0 0 2px rgba(13,110,253,.2)';
 
-      previewMarkerRef.current = new mapboxgl.Marker({ element: el, anchor: 'center', draggable: !!previewDraggable })
-        .setLngLat(previewCoords)
+      previewMarker.current = new mapboxgl.Marker({
+        element: el,
+        draggable: previewDraggable,
+      })
+        .setLngLat([lng, lat])
         .addTo(map);
 
       if (previewDraggable && onPreviewDragEnd) {
-        previewMarkerRef.current.on('dragend', () => {
-          const pos = previewMarkerRef.current!.getLngLat();
-          onPreviewDragEnd(Number(pos.lng.toFixed(6)), Number(pos.lat.toFixed(6)));
+        previewMarker.current.on('dragend', () => {
+          const pos = previewMarker.current!.getLngLat();
+          const nx2 = fromLon(pos.lng);
+          const ny2 = fromLat(pos.lat, imageAspect);
+          onPreviewDragEnd(nx2, ny2);
         });
       }
     } else {
-      previewMarkerRef.current.setLngLat(previewCoords);
+      previewMarker.current.setLngLat([lng, lat]);
     }
-  }, [mode, previewCoords, previewDraggable, onPreviewDragEnd]);
+  }, [previewCoords, previewDraggable, imageAspect, mode]);
 
-  return <div ref={mapElRef} className="h-full w-full rounded border border-[#DEE2E6]" />;
+  return <div ref={mapEl} className="h-full w-full rounded border" />;
 });
 
 export default FloorplanMapBase;
